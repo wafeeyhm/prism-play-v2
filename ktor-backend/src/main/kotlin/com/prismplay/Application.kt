@@ -51,20 +51,24 @@ fun main() {
             }
 
             get("/api/homepage") {
-                val provider = call.request.queryParameters["provider"] ?: "Default"
+                val provider = call.request.queryParameters["provider"] ?: "4K HDHUB"
                 call.respond(mapOf("categories" to CloudstreamBridge.getHomePage(provider)))
             }
 
             get("/api/search") {
-                val provider = call.request.queryParameters["provider"] ?: "Default"
+                val provider = call.request.queryParameters["provider"] ?: "4K HDHUB"
                 val query = call.request.queryParameters["query"] ?: ""
                 call.respond(mapOf("results" to CloudstreamBridge.searchProvider(provider, query)))
             }
 
             get("/api/streams") {
-                val provider = call.request.queryParameters["provider"] ?: "Default"
-                val targetUrl = call.request.queryParameters["url"] ?: "https://example.com"
-                call.respond(mapOf("streams" to CloudstreamBridge.resolveStreams(provider, targetUrl)))
+                val tmdbId = call.request.queryParameters["tmdbId"] ?: "693134"
+                val type = call.request.queryParameters["type"] ?: "Movie"
+                val season = call.request.queryParameters["season"]?.toIntOrNull() ?: 1
+                val episode = call.request.queryParameters["episode"]?.toIntOrNull() ?: 1
+
+                val streams = CloudstreamBridge.resolveStreams(tmdbId, type, season, episode)
+                call.respond(mapOf("streams" to streams))
             }
         }
     }.start(wait = true)
