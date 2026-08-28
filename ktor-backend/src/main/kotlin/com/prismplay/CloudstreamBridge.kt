@@ -10,6 +10,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonArray
 import com.google.gson.reflect.TypeToken
+import org.jsoup.Jsoup
 import java.io.File
 
 object CloudstreamBridge {
@@ -18,10 +19,10 @@ object CloudstreamBridge {
     }
 
     private val gson = Gson()
-    private val dataFile = File("data/repositories.json")
+    private val dataFile = File("data/state.json")
 
-    // Maps Repository Name -> List of Providers inside it
-    private val installedRepos = mutableMapOf<String, MutableList<JsonObject>>()
+    private val repoProviders = mutableMapOf<String, MutableList<JsonObject>>()
+    private val installedProviderNames = mutableSetOf<String>()
 
     init {
         loadFromFile()
@@ -31,9 +32,19 @@ object CloudstreamBridge {
         try {
             if (dataFile.exists()) {
                 val jsonString = dataFile.readText()
-                val type = object : TypeToken<Map<String, MutableList<JsonObject>>>() {}.type
-                val saved: Map<String, MutableList<JsonObject>> = gson.fromJson(jsonString, type) ?: emptyMap()
-                installedRepos.putAll(saved)
+                val root = gson.fromJson(jsonString, JsonObject::class.java)
+
+                if (root.has("repos")) {
+                    val repoType = object : TypeToken<Map<String, MutableList<JsonObject>>>() {}.type
+                    val savedRepos: Map<String, MutableList<JsonObject>> =
+                        gson.fromJson(root.get("repos"), repoType) ?: emptyMap()
+                    repoProviders.putAll(savedRepos)
+                }
+                if (root.has("installed")) {
+                    val instType = object : TypeToken<Set<String>>() {}.type
+                    val savedInst: Set<String> = gson.fromJson(root.get("installed"), instType) ?: emptySet()
+                    installedProviderNames.addAll(savedInst)
+                }
             }
         } catch (_: Exception) {
         }
@@ -42,7 +53,11 @@ object CloudstreamBridge {
     private fun saveToFile() {
         try {
             dataFile.parentFile?.mkdirs()
-            dataFile.writeText(gson.toJson(installedRepos))
+            val root = JsonObject().apply {
+                add("repos", gson.toJsonTree(repoProviders))
+                add("installed", gson.toJsonTree(installedProviderNames))
+            }
+            dataFile.writeText(gson.toJson(root))
         } catch (_: Exception) {
         }
     }
@@ -64,61 +79,66 @@ object CloudstreamBridge {
             if (jsonObject.has("pluginLists")) {
                 for (element in jsonObject.getAsJsonArray("pluginLists")) {
                     try {
-                        val subUrl = element.asString
-                        val subResponse: HttpResponse = client.get(subUrl)
+                        val subResponse: HttpResponse = client.get(element.asString)
                         for (pluginElement in gson.fromJson(subResponse.bodyAsText(), JsonArray::class.java)) {
                             providers.add(pluginElement.asJsonObject)
                         }
                     } catch (_: Exception) {
                     }
                 }
-                installedRepos[repoName] = providers
+                repoProviders[repoName] = providers
                 saveToFile()
                 return mapOf("success" to true, "repoName" to repoName, "count" to providers.size)
             }
-            return mapOf("success" to false, "error" to "Missing pluginLists array in repository JSON")
+            return mapOf("success" to false, "error" to "Missing pluginLists array")
         } catch (e: Exception) {
-            return mapOf("success" to false, "error" to (e.message ?: "Network or parsing exception"))
+            return mapOf("success" to false, "error" to (e.message ?: "Network error"))
         }
     }
 
     fun getRepositories(): Map<String, List<Map<String, Any>>> {
-        return installedRepos.mapValues { entry ->
+        return repoProviders.mapValues { entry ->
             entry.value.map { gson.fromJson(it, Map::class.java) as Map<String, Any> }
         }
     }
 
-    fun getPlugins(): List<Map<String, Any>> {
-        val all = mutableListOf<Map<String, Any>>()
-        installedRepos.values.forEach { list ->
-            list.forEach { all.add(gson.fromJson(it, Map::class.java) as Map<String, Any>) }
+    fun getInstalledPlugins(): List<Map<String, Any>> {
+        val all = repoProviders.values.flatten()
+        return all.filter { installedProviderNames.contains(it.get("name")?.asString) }
+            .map { gson.fromJson(it, Map::class.java) as Map<String, Any> }
+    }
+
+    fun toggleInstall(providerName: String, install: Boolean): Boolean {
+        if (install) {
+            installedProviderNames.add(providerName)
+        } else {
+            installedProviderNames.remove(providerName)
         }
-        return all
+        saveToFile()
+        return true
     }
 
     fun getHomePage(providerName: String): List<Map<String, Any>> {
-        val provider = installedRepos.values.flatten().find { it.get("name")?.asString == providerName }
-        val desc = provider?.get("description")?.asString ?: "Cloudstream community extension provider."
+        val provider = repoProviders.values.flatten().find { it.get("name")?.asString == providerName }
         val icon = provider?.get("iconUrl")?.asString ?: "https://placehold.co/200x300/1e293b/38bdf8?text=$providerName"
-        val lang = provider?.get("lang")?.asString ?: "en"
 
         return listOf(
             mapOf(
-                "categoryName" to "Featured Content ($lang)",
+                "categoryName" to "Trending Releases",
                 "items" to listOf(
                     mapOf(
                         "id" to "1",
-                        "title" to "$providerName - Trending Release 1",
+                        "title" to "$providerName Feature Movie",
                         "poster" to icon,
                         "type" to "Movie",
-                        "description" to desc
+                        "url" to "https://example.com/watch/1"
                     ),
                     mapOf(
                         "id" to "2",
-                        "title" to "$providerName - Series Pack",
+                        "title" to "$providerName Series Pack",
                         "poster" to icon,
                         "type" to "Series",
-                        "description" to desc
+                        "url" to "https://example.com/watch/2"
                     )
                 )
             )
@@ -126,12 +146,53 @@ object CloudstreamBridge {
     }
 
     fun searchProvider(providerName: String, query: String): List<Map<String, Any>> {
-        val provider = installedRepos.values.flatten().find { it.get("name")?.asString == providerName }
+        val provider = repoProviders.values.flatten().find { it.get("name")?.asString == providerName }
         val icon = provider?.get("iconUrl")?.asString ?: "https://placehold.co/200x300/1e293b/38bdf8?text=$providerName"
 
         return listOf(
-            mapOf("id" to "s1", "title" to "$query [Found on $providerName]", "poster" to icon, "type" to "movie"),
-            mapOf("id" to "s2", "title" to "$query (Complete Season)", "poster" to icon, "type" to "series")
+            mapOf(
+                "id" to "s1",
+                "title" to "$query [Found on $providerName]",
+                "poster" to icon,
+                "type" to "movie",
+                "url" to "https://example.com/watch/$query"
+            )
         )
+    }
+
+    suspend fun resolveStreams(providerName: String, targetUrl: String): List<Map<String, Any>> {
+        try {
+            val doc = Jsoup.connect(targetUrl)
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .timeout(10000)
+                .get()
+
+            val videoSources = mutableListOf<Map<String, Any>>()
+            val sources = doc.select("source, iframe, video")
+            for (src in sources) {
+                val link = src.absUrl("src").ifEmpty { src.absUrl("data-src") }
+                if (link.isNotBlank()) {
+                    videoSources.add(mapOf("quality" to "HD Source", "url" to link))
+                }
+            }
+
+            if (videoSources.isEmpty()) {
+                videoSources.add(
+                    mapOf(
+                        "quality" to "1080p Master (HLS)",
+                        "url" to "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+                    )
+                )
+            }
+
+            return videoSources
+        } catch (_: Exception) {
+            return listOf(
+                mapOf(
+                    "quality" to "Default Stream (Fallback)",
+                    "url" to "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+                )
+            )
+        }
     }
 }
