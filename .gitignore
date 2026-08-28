@@ -1,0 +1,18 @@
+# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Kotlin & Gradle / JVM
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+*.class
+*.jar
+
+# OS & IDE
+.DS_Store
+.idea/
+.vscode/
+*.env
